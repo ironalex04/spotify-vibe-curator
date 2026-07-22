@@ -1,4 +1,5 @@
 import os
+import time
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 from dotenv import load_dotenv
@@ -74,6 +75,27 @@ class SpotifyClientManager:
             self._sp = spotipy.Spotify(auth_manager=auth_manager)
         return self._sp
 
+    def _execute_with_retry(self, func, *args, **kwargs):
+        """Executes a spotipy client function and retries automatically if rate limited (HTTP 429)."""
+        import time
+        from spotipy.exceptions import SpotifyException
+        
+        max_retries = 5
+        retry_count = 0
+        while retry_count < max_retries:
+            try:
+                return func(*args, **kwargs)
+            except SpotifyException as e:
+                if e.http_status == 429:
+                    # If Spotify returns Retry-After header, use it, else default to 2 seconds
+                    retry_after = int(e.headers.get("Retry-After", 2))
+                    print(f"\n[Rate Limit] Spotify API rate limit reached. Waiting {retry_after}s before retrying...")
+                    time.sleep(retry_after)
+                    retry_count += 1
+                else:
+                    raise e
+        return func(*args, **kwargs)
+
     def verify_connection(self) -> dict:
         """Verifies connectivity by fetching the authenticated user's profile.
         
@@ -83,7 +105,7 @@ class SpotifyClientManager:
             spotipy.SpotifyException: If authentication or API request fails.
         """
         client = self.get_client()
-        user_info = client.current_user()
+        user_info = self._execute_with_retry(client.current_user)
         return user_info
 
     def get_user_playlists(self) -> list:
@@ -94,12 +116,12 @@ class SpotifyClientManager:
         """
         client = self.get_client()
         playlists = []
-        results = client.current_user_playlists(limit=50)
+        results = self._execute_with_retry(client.current_user_playlists, limit=50)
         while results:
             playlists.extend(results['items'])
             print(f"  Fetched {len(playlists)} playlists...", end="\r")
             if results['next']:
-                results = client.next(results)
+                results = self._execute_with_retry(client.next, results)
             else:
                 results = None
         print(f"  Fetched {len(playlists)} playlists total.      ")
@@ -124,7 +146,8 @@ class SpotifyClientManager:
             if pl['name'] == name:
                 return pl['id']
                 
-        new_pl = client.user_playlist_create(
+        new_pl = self._execute_with_retry(
+            client.user_playlist_create,
             user=user_id,
             name=name,
             public=public,
@@ -140,7 +163,7 @@ class SpotifyClientManager:
         """
         client = self.get_client()
         tracks = []
-        results = client.current_user_saved_tracks(limit=50)
+        results = self._execute_with_retry(client.current_user_saved_tracks, limit=50)
         while results:
             for item in results['items']:
                 track = item['track']
@@ -148,7 +171,7 @@ class SpotifyClientManager:
                     tracks.append(track['uri'])
             print(f"  Fetched {len(tracks)} Liked Songs...", end="\r")
             if results['next']:
-                results = client.next(results)
+                results = self._execute_with_retry(client.next, results)
             else:
                 results = None
         print(f"  Fetched {len(tracks)} Liked Songs total.      ")
@@ -166,17 +189,15 @@ class SpotifyClientManager:
         """
         client = self.get_client()
         tracks = []
-        # Use 'items,next' to get the full objects inside the paging items (works for both track and item keys)
-        results = client.playlist_tracks(playlist_id, fields="items,next", limit=100)
+        results = self._execute_with_retry(client.playlist_tracks, playlist_id, fields="items,next", limit=100)
         while results:
             for item in results['items']:
-                # The track details can be returned under 'track' or 'item' key depending on playlist type
                 track_data = item.get('track') or item.get('item')
                 if track_data and isinstance(track_data, dict) and track_data.get('uri'):
                     tracks.append(track_data['uri'])
             if results['next']:
                 print(f"  Querying {playlist_name} (loaded {len(tracks)} songs)...", end="\r")
-                results = client.next(results)
+                results = self._execute_with_retry(client.next, results)
             else:
                 results = None
         return tracks
@@ -193,7 +214,6 @@ class SpotifyClientManager:
         client = self.get_client()
         tracks = self.get_playlist_tracks(playlist_id, "::seed")
         
-        # Count occurrences of each track URI
         counts = {}
         for t in tracks:
             counts[t] = counts.get(t, 0) + 1
@@ -205,13 +225,10 @@ class SpotifyClientManager:
             
         print(f"  Found {len(duplicates)} duplicate tracks in '::seed'. Cleaning them up...")
         
-        # Spotify allows modifying playlists in batches of 100
         for i in range(0, len(duplicates), 100):
             batch = duplicates[i:i+100]
-            # 1. Remove ALL occurrences of these tracks from the playlist
-            client.playlist_remove_all_occurrences_of_items(playlist_id, batch)
-            # 2. Add exactly ONE copy of each track back
-            client.playlist_add_items(playlist_id, batch)
+            self._execute_with_retry(client.playlist_remove_all_occurrences_of_items, playlist_id, batch)
+            self._execute_with_retry(client.playlist_add_items, playlist_id, batch)
             
         return len(duplicates)
 
@@ -253,6 +270,8 @@ class SpotifyClientManager:
             try:
                 tracks = self.get_playlist_tracks(pl['id'], pl['name'])
                 all_playlist_tracks.extend(tracks)
+                import time
+                time.sleep(0.05) # Tiny proactive throttle to prevent rate limit
             except Exception as e:
                 print(f"\nWarning: Failed to fetch tracks for playlist {pl['name']} ({pl['id']}): {e}")
         
@@ -270,12 +289,11 @@ class SpotifyClientManager:
             print("Adding tracks to '::seed'...")
             for i in range(0, len(missing_tracks), 100):
                 batch = missing_tracks[i:i+100]
-                client.playlist_add_items(playlist_id, batch)
+                self._execute_with_retry(client.playlist_add_items, playlist_id, batch)
                 added_count += len(batch)
                 print(f"  Added {added_count}/{total_missing} songs...", end="\r")
             print(f"  Successfully added {added_count} songs.      ")
             
-        # Safety net: scan for any duplicates and remove them
         print("\nRunning safety check for duplicates in '::seed'...")
         removed_duplicates = self.deduplicate_playlist(playlist_id)
         if removed_duplicates > 0:
