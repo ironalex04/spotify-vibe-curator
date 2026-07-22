@@ -202,6 +202,37 @@ class SpotifyClientManager:
                 results = None
         return tracks
 
+    def get_playlist_tracks_detailed(self, playlist_id: str, playlist_name: str = "Playlist") -> list:
+        """Fetches detailed track info (uri, title, artist) for all tracks in a playlist.
+        
+        Args:
+            playlist_id: The ID of the playlist.
+            playlist_name: The name of the playlist for logs.
+            
+        Returns:
+            list: List of dicts, each with 'uri', 'title', and 'artist'.
+        """
+        client = self.get_client()
+        tracks = []
+        results = self._execute_with_retry(client.playlist_tracks, playlist_id, fields="items,next", limit=100)
+        while results:
+            for item in results['items']:
+                track_data = item.get('track') or item.get('item')
+                if track_data and isinstance(track_data, dict) and track_data.get('uri'):
+                    artists = track_data.get('artists', [])
+                    artist_name = artists[0].get('name', 'Unknown Artist') if artists else 'Unknown Artist'
+                    tracks.append({
+                        "uri": track_data['uri'],
+                        "title": track_data.get('name', 'Unknown Track'),
+                        "artist": artist_name
+                    })
+            if results['next']:
+                print(f"  Querying {playlist_name} (loaded {len(tracks)} songs)...", end="\r")
+                results = self._execute_with_retry(client.next, results)
+            else:
+                results = None
+        return tracks
+
     def deduplicate_playlist(self, playlist_id: str) -> int:
         """Scans a playlist for duplicate tracks and removes them, leaving exactly one of each.
         

@@ -1,3 +1,3 @@
-spotipy>=2.24.0
-requests>=2.31.0
-python-dotenv>=1.0.1
+spotipy>=2.24.0 # for spotify API to get user data and playlists
+requests>=2.31.0 # for http requests to API
+python-dotenv>=1.0.1 # for managing environment variables
