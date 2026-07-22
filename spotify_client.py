@@ -97,10 +97,12 @@ class SpotifyClientManager:
         results = client.current_user_playlists(limit=50)
         while results:
             playlists.extend(results['items'])
+            print(f"  Fetched {len(playlists)} playlists...", end="\r")
             if results['next']:
                 results = client.next(results)
             else:
                 results = None
+        print(f"  Fetched {len(playlists)} playlists total.      ")
         return playlists
 
     def find_or_create_playlist(self, name: str, description: str = "", public: bool = False) -> str:
@@ -144,29 +146,33 @@ class SpotifyClientManager:
                 track = item['track']
                 if track:
                     tracks.append(track['uri'])
+            print(f"  Fetched {len(tracks)} Liked Songs...", end="\r")
             if results['next']:
                 results = client.next(results)
             else:
                 results = None
+        print(f"  Fetched {len(tracks)} Liked Songs total.      ")
         return tracks
 
-    def get_playlist_tracks(self, playlist_id: str) -> list:
+    def get_playlist_tracks(self, playlist_id: str, playlist_name: str = "Playlist") -> list:
         """Fetches all track URIs currently in a playlist.
         
         Args:
             playlist_id: The ID of the playlist.
+            playlist_name: The name of the playlist for logs.
             
         Returns:
             list: List of track URIs.
         """
         client = self.get_client()
         tracks = []
-        results = client.playlist_tracks(playlist_id, fields="items(track(uri)),next")
+        results = client.playlist_tracks(playlist_id, fields="items(track(uri)),next", limit=100)
         while results:
             for item in results['items']:
                 if item.get('track'):
                     tracks.append(item['track']['uri'])
             if results['next']:
+                print(f"  Querying {playlist_name} (loaded {len(tracks)} songs)...", end="\r")
                 results = client.next(results)
             else:
                 results = None
@@ -184,36 +190,53 @@ class SpotifyClientManager:
         """
         client = self.get_client()
         
+        print("Finding or creating '::seed' playlist...")
         playlist_id = self.find_or_create_playlist(
             name="::seed",
             description="Inbox/Seed playlist for Spotify Vibe Curator. Automatically synced from Liked Songs and playlists.",
             public=False
         )
         
-        existing_tracks = set(self.get_playlist_tracks(playlist_id))
+        print("Fetching existing tracks in '::seed'...")
+        existing_tracks = set(self.get_playlist_tracks(playlist_id, "::seed"))
+        print(f"Found {len(existing_tracks)} tracks already in '::seed'.")
+        
+        print("\nFetching all Liked Songs from your library...")
         library_tracks = self.get_all_saved_tracks()
+        
+        print("\nFetching your playlists list...")
         playlists = self.get_user_playlists()
         
+        print("\nScanning tracks from all playlists (this may take a moment)...")
         all_playlist_tracks = []
         for pl in playlists:
             if pl['id'] == playlist_id or pl['name'] == "::seed":
                 continue
             
             try:
-                tracks = self.get_playlist_tracks(pl['id'])
+                tracks = self.get_playlist_tracks(pl['id'], pl['name'])
                 all_playlist_tracks.extend(tracks)
             except Exception as e:
-                print(f"Warning: Failed to fetch tracks for playlist {pl['name']} ({pl['id']}): {e}")
+                print(f"\nWarning: Failed to fetch tracks for playlist {pl['name']} ({pl['id']}): {e}")
+        
+        print(f"\nScanned {len(all_playlist_tracks)} tracks from your playlists.")
         
         combined_tracks = set(library_tracks + all_playlist_tracks)
         missing_tracks = [t for t in combined_tracks if t not in existing_tracks]
         
+        total_missing = len(missing_tracks)
+        print(f"\nUnique candidate tracks found: {len(combined_tracks)}")
+        print(f"Tracks to add to '::seed': {total_missing}")
+        
         added_count = 0
         if missing_tracks:
+            print("Adding tracks to '::seed'...")
             for i in range(0, len(missing_tracks), 100):
                 batch = missing_tracks[i:i+100]
                 client.playlist_add_items(playlist_id, batch)
                 added_count += len(batch)
+                print(f"  Added {added_count}/{total_missing} songs...", end="\r")
+            print(f"  Successfully added {added_count} songs.      ")
                 
         return {
             "status": "success",
