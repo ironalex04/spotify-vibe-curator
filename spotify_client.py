@@ -226,10 +226,24 @@ class SpotifyClientManager:
         }
 
 if __name__ == "__main__":
-    print("Testing Spotify Client Manager initialization...")
+    print("Testing Spotify Client Manager...")
     try:
         manager = SpotifyClientManager()
         print("Success: Client manager initialized. Credentials are set.")
+        
+        print("\nStarting live library synchronization to '::seed' playlist...")
+        print("This will open your browser for Spotify authentication if you haven't logged in yet.")
+        
+        results = manager.sync_library_to_seed()
+        print("\nSync completed successfully!")
+        print(f"Playlist ID: {results['playlist_id']}")
+        print(f"Total Liked Songs fetched: {results['total_saved_tracks']}")
+        print(f"Total Playlist Songs scanned: {results['total_playlist_tracks_collected']}")
+        print(f"Total Unique Source Songs: {results['total_unique_source_tracks']}")
+        print(f"Songs already present in '::seed': {results['already_in_seed']}")
+        print(f"New songs added to '::seed': {results['added_count']}")
     except ValueError as e:
         print(f"Configuration validation failed: {e}")
         print("Please check your .env configuration.")
+    except Exception as e:
+        print(f"An error occurred during synchronization: {e}")
