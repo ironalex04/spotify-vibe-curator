@@ -166,17 +166,54 @@ class SpotifyClientManager:
         """
         client = self.get_client()
         tracks = []
-        results = client.playlist_tracks(playlist_id, fields="items(track(uri)),next", limit=100)
+        # Use 'items,next' to get the full objects inside the paging items (works for both track and item keys)
+        results = client.playlist_tracks(playlist_id, fields="items,next", limit=100)
         while results:
             for item in results['items']:
-                if item.get('track'):
-                    tracks.append(item['track']['uri'])
+                # The track details can be returned under 'track' or 'item' key depending on playlist type
+                track_data = item.get('track') or item.get('item')
+                if track_data and isinstance(track_data, dict) and track_data.get('uri'):
+                    tracks.append(track_data['uri'])
             if results['next']:
                 print(f"  Querying {playlist_name} (loaded {len(tracks)} songs)...", end="\r")
                 results = client.next(results)
             else:
                 results = None
         return tracks
+
+    def deduplicate_playlist(self, playlist_id: str) -> int:
+        """Scans a playlist for duplicate tracks and removes them, leaving exactly one of each.
+        
+        Args:
+            playlist_id: The ID of the playlist to deduplicate.
+            
+        Returns:
+            int: The number of duplicate tracks cleaned up.
+        """
+        client = self.get_client()
+        tracks = self.get_playlist_tracks(playlist_id, "::seed")
+        
+        # Count occurrences of each track URI
+        counts = {}
+        for t in tracks:
+            counts[t] = counts.get(t, 0) + 1
+            
+        duplicates = [uri for uri, count in counts.items() if count > 1]
+        
+        if not duplicates:
+            return 0
+            
+        print(f"  Found {len(duplicates)} duplicate tracks in '::seed'. Cleaning them up...")
+        
+        # Spotify allows modifying playlists in batches of 100
+        for i in range(0, len(duplicates), 100):
+            batch = duplicates[i:i+100]
+            # 1. Remove ALL occurrences of these tracks from the playlist
+            client.playlist_remove_all_occurrences_of_items(playlist_id, batch)
+            # 2. Add exactly ONE copy of each track back
+            client.playlist_add_items(playlist_id, batch)
+            
+        return len(duplicates)
 
     def sync_library_to_seed(self) -> dict:
         """Syncs all saved tracks (Liked Songs) and tracks from all playlists 
@@ -237,6 +274,14 @@ class SpotifyClientManager:
                 added_count += len(batch)
                 print(f"  Added {added_count}/{total_missing} songs...", end="\r")
             print(f"  Successfully added {added_count} songs.      ")
+            
+        # Safety net: scan for any duplicates and remove them
+        print("\nRunning safety check for duplicates in '::seed'...")
+        removed_duplicates = self.deduplicate_playlist(playlist_id)
+        if removed_duplicates > 0:
+            print(f"Safety check complete: cleaned up {removed_duplicates} duplicate tracks.")
+        else:
+            print("Safety check complete: no duplicates found.")
                 
         return {
             "status": "success",
@@ -245,7 +290,8 @@ class SpotifyClientManager:
             "total_playlist_tracks_collected": len(all_playlist_tracks),
             "total_unique_source_tracks": len(combined_tracks),
             "already_in_seed": len(existing_tracks),
-            "added_count": added_count
+            "added_count": added_count,
+            "removed_duplicates_count": removed_duplicates
         }
 
 if __name__ == "__main__":
@@ -265,6 +311,7 @@ if __name__ == "__main__":
         print(f"Total Unique Source Songs: {results['total_unique_source_tracks']}")
         print(f"Songs already present in '::seed': {results['already_in_seed']}")
         print(f"New songs added to '::seed': {results['added_count']}")
+        print(f"Duplicate track types cleaned up by safety net: {results['removed_duplicates_count']}")
     except ValueError as e:
         print(f"Configuration validation failed: {e}")
         print("Please check your .env configuration.")
